@@ -151,8 +151,8 @@ class CarRacing(gym.Env, EzPickle):
         self.road = []
         self.car.destroy()
 
-    def _create_track(self):
-        CHECKPOINTS = 12
+    def _create_track(self, num_of_checkpoints=18):
+        CHECKPOINTS = num_of_checkpoints
 
         # Create checkpoints
         checkpoints = []
@@ -359,7 +359,10 @@ class CarRacing(gym.Env, EzPickle):
         plt.plot(road2_lx,road2_ly,label='road2_l')
         plt.plot(road2_rx,road2_ry,label='road2_r')
         plt.plot(xs,ys)
+        
         plt.plot(x,y,"o")
+        for a,b in zip(x, y): 
+            plt.text(a, b, str(round(a, 2))+', '+str(round(b, 2)))
         plt.title("plot 1")
         plt.show()
         self.track = track
