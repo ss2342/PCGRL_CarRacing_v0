@@ -3,28 +3,36 @@ Easiest continuous control task to learn from pixels, a top-down racing
 environment.
 Discrete control is reasonable in this environment as well, on/off
 discretization is fine.
+
 State consists of STATE_W x STATE_H pixels.
+
 The reward is -0.1 every frame and +1000/N for every track tile visited, where
 N is the total number of tiles visited in the track. For example, if you have
 finished in 732 frames, your reward is 1000 - 0.1*732 = 926.8 points.
+
 The game is solved when the agent consistently gets 900+ points. The generated
 track is random every episode.
+
 The episode finishes when all the tiles are visited. The car also can go
 outside of the PLAYFIELD -  that is far off the track, then it will get -100
 and die.
+
 Some indicators are shown at the bottom of the window along with the state RGB
 buffer. From left to right: the true speed, four ABS sensors, the steering
 wheel position and gyroscope.
+
 To play yourself (it's rather fast for humans), type:
+
 python gym/envs/box2d/car_racing.py
+
 Remember it's a powerful rear-wheel drive car -  don't press the accelerator
 and turn at the same time.
+
 Created by Oleg Klimov. Licensed on the same terms as the rest of OpenAI Gym.
 """
 import sys
 import math
 import numpy as np
-import matplotlib.pyplot as plt
 
 import Box2D
 from Box2D.b2 import fixtureDef
@@ -37,6 +45,7 @@ from gym.envs.box2d.car_dynamics import Car
 from gym.utils import seeding, EzPickle
 
 import pyglet
+from track_generation_env import TrackGenerationEnv
 
 pyglet.options["debug_gl"] = False
 from pyglet import gl
@@ -52,7 +61,7 @@ SCALE = 6.0  # Track scale
 TRACK_RAD = 900 / SCALE  # Track is heavily morphed circle with this radius
 PLAYFIELD = 2000 / SCALE  # Game over boundary
 FPS = 50  # Frames per second
-ZOOM = 0.3  # Camera zoom
+ZOOM = 0.5  # Camera zoom
 ZOOM_FOLLOW = True  # Set to False for fixed view (don't use zoom)
 
 
@@ -63,8 +72,6 @@ BORDER = 8 / SCALE
 BORDER_MIN_COUNT = 4
 
 ROAD_COLOR = [0.4, 0.4, 0.4]
-
-track_arr = []
 
 
 class FrictionDetector(contactListener):
@@ -114,6 +121,13 @@ class CarRacing(gym.Env, EzPickle):
     }
 
     def __init__(self, verbose=1):
+        env = TrackGenerationEnv()
+        env.reset()
+        # print(env.checkpoints)
+        # print(len(env.checkpoints))
+        env.step(env.action_space.sample())
+        self.checkpoints = env.checkpoints
+        
         EzPickle.__init__(self)
         self.seed()
         self.contactListener_keepref = FrictionDetector(self)
@@ -126,6 +140,7 @@ class CarRacing(gym.Env, EzPickle):
         self.reward = 0.0
         self.prev_reward = 0.0
         self.verbose = verbose
+        self.start_alpha = 0.0
         self.fd_tile = fixtureDef(
             shape=polygonShape(vertices=[(0, 0), (1, 0), (1, -1), (0, -1)])
         )
@@ -155,22 +170,21 @@ class CarRacing(gym.Env, EzPickle):
         CHECKPOINTS = 12
 
         # Create checkpoints
-        checkpoints = []
-        for c in range(CHECKPOINTS):
-            noise = self.np_random.uniform(0, 2 * math.pi * 1 / CHECKPOINTS)
-            alpha = 2 * math.pi * c / CHECKPOINTS + noise
-            rad = self.np_random.uniform(TRACK_RAD / 3, TRACK_RAD)
+        checkpoints = self.checkpoints
+        # for c in range(CHECKPOINTS):
+        #     noise = self.np_random.uniform(0, 2 * math.pi * 1 / CHECKPOINTS)
+        #     alpha = 2 * math.pi * c / CHECKPOINTS + noise
+        #     rad = self.np_random.uniform(TRACK_RAD / 3, TRACK_RAD)
 
-            if c == 0:
-                alpha = 0
-                rad = 1.5 * TRACK_RAD
-            if c == CHECKPOINTS - 1:
-                alpha = 2 * math.pi * c / CHECKPOINTS
-                self.start_alpha = 2 * math.pi * (-0.5) / CHECKPOINTS
-                rad = 1.5 * TRACK_RAD
+        #     if c == 0:
+        #         alpha = 0
+        #         rad = 1.5 * TRACK_RAD
+        #     if c == CHECKPOINTS - 1:
+        #         alpha = 2 * math.pi * c / CHECKPOINTS
+        #         self.start_alpha = 2 * math.pi * (-0.5) / CHECKPOINTS
+        #         rad = 1.5 * TRACK_RAD
 
-            checkpoints.append((alpha, rad * math.cos(alpha), rad * math.sin(alpha)))
-        # print(checkpoints)
+        #     checkpoints.append((alpha, rad * math.cos(alpha), rad * math.sin(alpha)))
         self.road = []
 
         # Go from one checkpoint to another to create track
@@ -193,6 +207,7 @@ class CarRacing(gym.Env, EzPickle):
                 failed = True
 
                 while True:
+                    # print(checkpoints[1])
                     dest_alpha, dest_x, dest_y = checkpoints[dest_i % len(checkpoints)]
                     if alpha <= dest_alpha:
                         failed = False
@@ -284,7 +299,6 @@ class CarRacing(gym.Env, EzPickle):
                 border[i - neg] |= border[i]
 
         # Create tiles
-        road_poly_lst = []
         for i in range(len(track)):
             alpha1, beta1, x1, y1 = track[i]
             alpha2, beta2, x2, y2 = track[i - 1]
@@ -314,7 +328,6 @@ class CarRacing(gym.Env, EzPickle):
             t.road_friction = 1.0
             t.fixtures[0].sensor = True
             self.road_poly.append(([road1_l, road1_r, road2_r, road2_l], t.color))
-            road_poly_lst.append((road1_l, road1_r, road2_r, road2_l))
             self.road.append(t)
             if border[i]:
                 side = np.sign(beta2 - beta1)
@@ -337,34 +350,7 @@ class CarRacing(gym.Env, EzPickle):
                 self.road_poly.append(
                     ([b1_l, b1_r, b2_r, b2_l], (1, 1, 1) if i % 2 == 0 else (1, 0, 0))
                 )
-        x=[i[1]for i in checkpoints]
-        y=[i[2]for i in checkpoints]
-        xs=[i[2] for i in track]
-        ys=[i[3] for i in track]
-
-        road1_lx=[i[0][0]for i in road_poly_lst]
-        road1_ly=[i[0][1]for i in road_poly_lst]
-
-        road1_rx=[i[1][0]for i in road_poly_lst]
-        road1_ry=[i[1][1]for i in road_poly_lst]
-
-        road2_lx=[i[2][0]for i in road_poly_lst]
-        road2_ly=[i[2][1]for i in road_poly_lst]
-
-        road2_rx=[i[3][0]for i in road_poly_lst]
-        road2_ry=[i[3][1]for i in road_poly_lst]
-        plt.plot(road1_lx,road1_ly,label='road1_l')
-        plt.plot(road1_rx,road1_ry,label='road1_r')
-
-        plt.plot(road2_lx,road2_ly,label='road2_l')
-        plt.plot(road2_rx,road2_ry,label='road2_r')
-        plt.plot(xs,ys)
-        plt.plot(x,y,"o")
-        plt.title("plot 1")
-        plt.show()
         self.track = track
-        
-        # print(self.track)
         return True
 
     def reset(self):
