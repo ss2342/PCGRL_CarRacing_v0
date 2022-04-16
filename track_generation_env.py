@@ -5,6 +5,7 @@ import numpy as np
 from typing import Optional
 import math
 
+
 STATE_W = 96  # less than Atari 160x192
 STATE_H = 96
 VIDEO_W = 600
@@ -16,7 +17,7 @@ SCALE = 6.0  # Track scale
 TRACK_RAD = 900 / SCALE  # Track is heavily morphed circle with this radius
 PLAYFIELD = 2000 / SCALE  # Game over boundary
 FPS = 50  # Frames per second
-ZOOM = 0.3  # Camera zoom
+ZOOM = 2.7  # Camera zoom
 ZOOM_FOLLOW = True  # Set to False for fixed view (don't use zoom)
 
 
@@ -78,7 +79,7 @@ class TrackGenerationEnv(gym.Env, EzPickle):
   def step(self, action):
     reward=0
     done=False
-    print(action)
+    # print(action)
     if  action[1]==0:
       self.checkpoints[action[0]][0]=self.checkpoints[action[0]][0]+0.01
     elif action[1]==1:
@@ -105,6 +106,6 @@ class TrackGenerationEnv(gym.Env, EzPickle):
 if __name__ == "__main__":
   env = TrackGenerationEnv()
   env.reset()
-  print(env.checkpoints)
+  # print(env.checkpoints)
   env.step(env.action_space.sample())
-  print(env.checkpoints)
+  # print(env.checkpoints)
