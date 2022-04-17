@@ -57,47 +57,44 @@ def pid(error,previous_error):
     steering = Kp * error + Ki * (error + previous_error) + Kd * (error - previous_error)
     return steering
 
+def pcgrl_input():
+    prev_err = 0
+    rewards = []
+    env = CarRacing()
+    observation = env.reset()
+    # env._graph_both_tracks()
+    env.render() 
+    rewardsum = 0  
+    previous_error = 0    
+    for x in [1,0]*1000:      
 
-# env = TrackGenerationEnv()
-prev_err = 0
-rewards = []
-env = CarRacing()
-# obs = env.reset()
-observation = env.reset()
-# print(observation[39])
-# env.close()
-env.render() 
-rewardsum = 0  
-previous_error = 0    
-for x in [1,0]*1000:      
+        try:
+            error = find_error(observation,previous_error)
+        except:
+            error = -15
+            print("error")
+            pass
 
-    try:
-      error = find_error(observation,previous_error)
-    except:
-      error = -15
-      print("error")
-      pass
-
-    steering = pid(error,previous_error)
-   
-    action = (steering,x,0)
-
-    observation, reward, done, info = env.step(action)
-    previous_error =error
-    rewardsum = rewardsum +reward
-    env.render()
-    if done :
-      env.close()
-      break
+        steering = pid(error,previous_error)
     
-print("reward", rewardsum)
-# show_video()
-# env.render()
-# print(obs)
-# for t in range(1000):
-#     err, prev_err = find_error(obs, prev_err)
-#     action = pid(err, prev_err)
-#     obs, reward, done, info = env.step(action)
-#     # if done is True:
-#         # break
-#     rewards.append(reward)
+        action = (steering,x,0)
+
+        observation, reward, done, info = env.step(action)
+        previous_error =error
+        rewardsum = rewardsum +reward
+        env.render()
+        if done :
+            env.close()
+            break
+
+    return env.checkpoints, rewardsum
+        
+
+if __name__ == "__main__":
+
+    checkpoints, rewardsum = pcgrl_input()
+    print(checkpoints)
+    print(rewardsum)
+
+
+

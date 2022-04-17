@@ -4,6 +4,7 @@ from gym.utils import seeding, EzPickle
 import numpy as np
 from typing import Optional
 import math
+import matplotlib.pyplot as plt
 
 
 STATE_W = 96  # less than Atari 160x192
@@ -66,30 +67,22 @@ class TrackGenerationEnv(gym.Env, EzPickle):
       checkpoints.append([alpha, rad * math.cos(alpha), rad * math.sin(alpha)])
     return checkpoints
  
-  # def _checkpoints_generation(self):
-  #   checkpoints = []
 
-  #   for c in range(CHECKPOINTS):
-  #     alpha = self.np_random.uniform(0,1)
-  #     rad = self.np_random.uniform(1 / 3, 1.5)
-  #     checkpoints.append([alpha, rad])
-
-  #   return checkpoints
 
   def step(self, action):
     reward=0
     done=False
     # print(action)
-    if  action[1]==0:
-      self.checkpoints[action[0]][0]=self.checkpoints[action[0]][0]+0.01
+    # print(self.checkpoints[action[0]])
+    if  action[1]==0: # increase radian by 
+      self.checkpoints[action[0]][0]=self.checkpoints[action[0]][0]+50
     elif action[1]==1:
-      self.checkpoints[action[0]][0]=self.checkpoints[action[0]][0]-0.01
+      self.checkpoints[action[0]][0]=self.checkpoints[action[0]][0]-50
     elif action[1]==2:
-      self.checkpoints[action[0]][1]=self.checkpoints[action[0]][1]+0.01
+      self.checkpoints[action[0]][1]=self.checkpoints[action[0]][1]+50
     elif action[1]==3:
-      self.checkpoints[action[0]][1]=self.checkpoints[action[0]][1]-0.01  
-
-
+      self.checkpoints[action[0]][1]=self.checkpoints[action[0]][1]-50
+    print(self.checkpoints[action[0]])
     return self.checkpoints, reward, done, {}
     
   def reset(
@@ -103,9 +96,160 @@ class TrackGenerationEnv(gym.Env, EzPickle):
     # Render the environment to the screen
     ...
 
+
+def plot_map(checkpoints):
+  start_alpha = (checkpoints[0][0]+checkpoints[-1][0]-2 * math.pi)/2
+  x, y, beta = 1.5 * TRACK_RAD, 0, 0
+  dest_i = 0
+  laps = 0
+  track = []
+  no_freeze = 2500
+  visited_other_side = False
+  while True:
+      alpha = math.atan2(y, x)
+      if visited_other_side and alpha > 0:
+          laps += 1
+          visited_other_side = False
+      if alpha < 0:
+          visited_other_side = True
+          alpha += 2 * math.pi
+
+      while True:  # Find destination from checkpoints
+          failed = True
+
+          while True:
+              dest_alpha, dest_x, dest_y = checkpoints[dest_i % len(checkpoints)]
+              if alpha <= dest_alpha:
+                  failed = False
+                  break
+              dest_i += 1
+              if dest_i % len(checkpoints) == 0:
+                  break
+
+          if not failed:
+              break
+
+          alpha -= 2 * math.pi
+          continue
+
+      r1x = math.cos(beta)
+      r1y = math.sin(beta)
+      p1x = -r1y#-siny
+      p1y = r1x#cosx
+      dest_dx = dest_x - x  # vector towards destination
+      dest_dy = dest_y - y
+      # destination vector projected on rad:
+      proj = r1x * dest_dx + r1y * dest_dy
+      while beta - alpha > 1.5 * math.pi:
+          beta -= 2 * math.pi
+      while beta - alpha < -1.5 * math.pi:
+          beta += 2 * math.pi
+      prev_beta = beta
+      proj *= SCALE
+      if proj > 0.3:
+          beta -= min(TRACK_TURN_RATE, abs(0.001 * proj))
+      if proj < -0.3:
+          beta += min(TRACK_TURN_RATE, abs(0.001 * proj))
+      x += p1x * TRACK_DETAIL_STEP
+      y += p1y * TRACK_DETAIL_STEP
+      track.append((alpha, prev_beta * 0.5 + beta * 0.5, x, y))
+      if laps > 4:
+          break
+      no_freeze -= 1
+      if no_freeze == 0:
+          break
+
+  # Find closed loop range i1..i2, first loop should be ignored, second is OK
+  i1, i2 = -1, -1
+  i = len(track)
+  while True:
+      i -= 1
+      if i == 0:
+          return False
+ 
+      pass_through_start = (
+          track[i][0] > start_alpha and track[i - 1][0] <= start_alpha
+      )
+      if pass_through_start and i2 == -1:
+          i2 = i
+      elif pass_through_start and i1 == -1:
+          i1 = i
+          break
+
+  assert i1 != -1
+  assert i2 != -1
+
+  track = track[i1 : i2 - 1]
+
+
+  # Create tiles
+  road_poly=[]
+  for i in range(len(track)):
+      alpha1, beta1, x1, y1 = track[i]
+      alpha2, beta2, x2, y2 = track[i - 1]
+      road1_l = (
+          x1 - TRACK_WIDTH * math.cos(beta1),
+          y1 - TRACK_WIDTH * math.sin(beta1),
+      )
+      road1_r = (
+          x1 + TRACK_WIDTH * math.cos(beta1),
+          y1 + TRACK_WIDTH * math.sin(beta1),
+      )
+      road2_l = (
+          x2 - TRACK_WIDTH * math.cos(beta2),
+          y2 - TRACK_WIDTH * math.sin(beta2),
+      )
+      road2_r = (
+          x2 + TRACK_WIDTH * math.cos(beta2),
+          y2 + TRACK_WIDTH * math.sin(beta2),
+      )
+      vertices = [road1_l, road1_r, road2_r, road2_l]
+
+      road_poly.append((road1_l, road1_r, road2_r, road2_l))
+
+
+  x=[i[1]for i in checkpoints]
+  y=[i[2]for i in checkpoints]
+  xs=[i[2] for i in track]
+  ys=[i[3] for i in track]
+
+  road1_lx=[i[0][0]for i in road_poly]
+  road1_ly=[i[0][1]for i in road_poly]
+
+  road1_rx=[i[1][0]for i in road_poly]
+  road1_ry=[i[1][1]for i in road_poly]
+
+  road2_lx=[i[2][0]for i in road_poly]
+  road2_ly=[i[2][1]for i in road_poly]
+
+  road2_rx=[i[3][0]for i in road_poly]
+  road2_ry=[i[3][1]for i in road_poly]
+  plt.plot(road1_lx,road1_ly,label='road1_l')
+  plt.plot(road1_rx,road1_ry,label='road1_r')
+
+  plt.plot(road2_lx,road2_ly,label='road2_l')
+  plt.plot(road2_rx,road2_ry,label='road2_r')
+
+  # plt.legend()
+  plt.plot(xs,ys)
+  plt.plot(x, y, "o")
+  for a,b in zip(x, y): 
+      plt.text(a, b, str(round(a, 2))+', '+str(round(b, 2)))
+  plt.title("Track")
+  plt.show()
+  # print(road_poly[0])
+
 if __name__ == "__main__":
   env = TrackGenerationEnv()
   env.reset()
-  # print(env.checkpoints)
+  old = env.checkpoints
+  # print(old)
+  # plot_map(old)
   env.step(env.action_space.sample())
-  # print(env.checkpoints)
+  new = env.checkpoints
+  # plot_map(new)
+  # print(new)
+
+
+
+

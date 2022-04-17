@@ -33,6 +33,7 @@ Created by Oleg Klimov. Licensed on the same terms as the rest of OpenAI Gym.
 import sys
 import math
 import numpy as np
+import matplotlib.pyplot as plt
 
 import Box2D
 from Box2D.b2 import fixtureDef
@@ -45,7 +46,7 @@ from gym.envs.box2d.car_dynamics import Car
 from gym.utils import seeding, EzPickle
 
 import pyglet
-from track_generation_env import TrackGenerationEnv
+from track_generation_env import TrackGenerationEnv, plot_map
 
 pyglet.options["debug_gl"] = False
 from pyglet import gl
@@ -123,10 +124,14 @@ class CarRacing(gym.Env, EzPickle):
     def __init__(self, verbose=1):
         env = TrackGenerationEnv()
         env.reset()
-        # print(env.checkpoints)
-        # print(len(env.checkpoints))
+        self.orginal_checkpoints = env.checkpoints
+        plot_map(self.orginal_checkpoints)
         env.step(env.action_space.sample())
         self.checkpoints = env.checkpoints
+        plot_map(self.checkpoints)
+     
+        # self.road_poly_lst = []
+        # self.track = None
         
         EzPickle.__init__(self)
         self.seed()
@@ -144,6 +149,9 @@ class CarRacing(gym.Env, EzPickle):
         self.fd_tile = fixtureDef(
             shape=polygonShape(vertices=[(0, 0), (1, 0), (1, -1), (0, -1)])
         )
+        # self.fd_tile_original = fixtureDef(
+        #     shape=polygonShape(vertices=[(0, 0), (1, 0), (1, -1), (0, -1)])
+        # )
 
         self.action_space = spaces.Box(
             np.array([-1, 0, 0]).astype(np.float32),
@@ -171,20 +179,6 @@ class CarRacing(gym.Env, EzPickle):
 
         # Create checkpoints
         checkpoints = self.checkpoints
-        # for c in range(CHECKPOINTS):
-        #     noise = self.np_random.uniform(0, 2 * math.pi * 1 / CHECKPOINTS)
-        #     alpha = 2 * math.pi * c / CHECKPOINTS + noise
-        #     rad = self.np_random.uniform(TRACK_RAD / 3, TRACK_RAD)
-
-        #     if c == 0:
-        #         alpha = 0
-        #         rad = 1.5 * TRACK_RAD
-        #     if c == CHECKPOINTS - 1:
-        #         alpha = 2 * math.pi * c / CHECKPOINTS
-        #         self.start_alpha = 2 * math.pi * (-0.5) / CHECKPOINTS
-        #         rad = 1.5 * TRACK_RAD
-
-        #     checkpoints.append((alpha, rad * math.cos(alpha), rad * math.sin(alpha)))
         self.road = []
 
         # Go from one checkpoint to another to create track
@@ -353,6 +347,310 @@ class CarRacing(gym.Env, EzPickle):
         self.track = track
         return True
 
+    # def _graph_original_track(self):
+    #     CHECKPOINTS = 12
+
+    #     # Create checkpoints
+    #     checkpoints = self.orginal_checkpoints
+    #     # self.original_road = []
+
+    #     # Go from one checkpoint to another to create track
+    #     x, y, beta = 1.5 * TRACK_RAD, 0, 0
+    #     dest_i = 0
+    #     laps = 0
+    #     track = []
+    #     no_freeze = 2500
+    #     visited_other_side = False
+    #     while True:
+    #         alpha = math.atan2(y, x)
+    #         if visited_other_side and alpha > 0:
+    #             laps += 1
+    #             visited_other_side = False
+    #         if alpha < 0:
+    #             visited_other_side = True
+    #             alpha += 2 * math.pi
+
+    #         while True:  # Find destination from checkpoints
+    #             failed = True
+
+    #             while True:
+    #                 # print(checkpoints[1])
+    #                 dest_alpha, dest_x, dest_y = checkpoints[dest_i % len(checkpoints)]
+    #                 if alpha <= dest_alpha:
+    #                     failed = False
+    #                     break
+    #                 dest_i += 1
+    #                 if dest_i % len(checkpoints) == 0:
+    #                     break
+
+    #             if not failed:
+    #                 break
+
+    #             alpha -= 2 * math.pi
+    #             continue
+
+    #         r1x = math.cos(beta)
+    #         r1y = math.sin(beta)
+    #         p1x = -r1y
+    #         p1y = r1x
+    #         dest_dx = dest_x - x  # vector towards destination
+    #         dest_dy = dest_y - y
+    #         # destination vector projected on rad:
+    #         proj = r1x * dest_dx + r1y * dest_dy
+    #         while beta - alpha > 1.5 * math.pi:
+    #             beta -= 2 * math.pi
+    #         while beta - alpha < -1.5 * math.pi:
+    #             beta += 2 * math.pi
+    #         prev_beta = beta
+    #         proj *= SCALE
+    #         if proj > 0.3:
+    #             beta -= min(TRACK_TURN_RATE, abs(0.001 * proj))
+    #         if proj < -0.3:
+    #             beta += min(TRACK_TURN_RATE, abs(0.001 * proj))
+    #         x += p1x * TRACK_DETAIL_STEP
+    #         y += p1y * TRACK_DETAIL_STEP
+    #         track.append((alpha, prev_beta * 0.5 + beta * 0.5, x, y))
+    #         if laps > 4:
+    #             break
+    #         no_freeze -= 1
+    #         if no_freeze == 0:
+    #             break
+
+    #     # Find closed loop range i1..i2, first loop should be ignored, second is OK
+    #     i1, i2 = -1, -1
+    #     i = len(track)
+    #     while True:
+    #         i -= 1
+    #         if i == 0:
+    #             return False  # Failed
+    #         pass_through_start = (
+    #             track[i][0] > self.start_alpha and track[i - 1][0] <= self.start_alpha
+    #         )
+    #         if pass_through_start and i2 == -1:
+    #             i2 = i
+    #         elif pass_through_start and i1 == -1:
+    #             i1 = i
+    #             break
+    #     if self.verbose == 1:
+    #         print("Track generation: %i..%i -> %i-tiles track" % (i1, i2, i2 - i1))
+    #     assert i1 != -1
+    #     assert i2 != -1
+
+    #     track = track[i1 : i2 - 1]
+
+
+    #     # Create tiles
+    #     road_poly_lst = []
+    #     for i in range(len(track)):
+    #         alpha1, beta1, x1, y1 = track[i]
+    #         alpha2, beta2, x2, y2 = track[i - 1]
+    #         road1_l = (
+    #             x1 - TRACK_WIDTH * math.cos(beta1),
+    #             y1 - TRACK_WIDTH * math.sin(beta1),
+    #         )
+    #         road1_r = (
+    #             x1 + TRACK_WIDTH * math.cos(beta1),
+    #             y1 + TRACK_WIDTH * math.sin(beta1),
+    #         )
+    #         road2_l = (
+    #             x2 - TRACK_WIDTH * math.cos(beta2),
+    #             y2 - TRACK_WIDTH * math.sin(beta2),
+    #         )
+    #         road2_r = (
+    #             x2 + TRACK_WIDTH * math.cos(beta2),
+    #             y2 + TRACK_WIDTH * math.sin(beta2),
+    #         )
+    #         road_poly_lst.append((road1_l, road1_r, road2_r, road2_l))
+
+    #     return checkpoints, track, road_poly_lst
+    #     # self.original_track = track
+    #     # return True
+
+    # def _graph_new_track(self):
+    #     CHECKPOINTS = 12
+
+    #     # Create checkpoints
+    #     checkpoints = self.new_checkpoints
+    #     # self.original_road = []
+
+    #     # Go from one checkpoint to another to create track
+    #     x, y, beta = 1.5 * TRACK_RAD, 0, 0
+    #     dest_i = 0
+    #     laps = 0
+    #     track = []
+    #     no_freeze = 2500
+    #     visited_other_side = False
+    #     while True:
+    #         alpha = math.atan2(y, x)
+    #         if visited_other_side and alpha > 0:
+    #             laps += 1
+    #             visited_other_side = False
+    #         if alpha < 0:
+    #             visited_other_side = True
+    #             alpha += 2 * math.pi
+
+    #         while True:  # Find destination from checkpoints
+    #             failed = True
+
+    #             while True:
+    #                 # print(checkpoints[1])
+    #                 dest_alpha, dest_x, dest_y = checkpoints[dest_i % len(checkpoints)]
+    #                 if alpha <= dest_alpha:
+    #                     failed = False
+    #                     break
+    #                 dest_i += 1
+    #                 if dest_i % len(checkpoints) == 0:
+    #                     break
+
+    #             if not failed:
+    #                 break
+
+    #             alpha -= 2 * math.pi
+    #             continue
+
+    #         r1x = math.cos(beta)
+    #         r1y = math.sin(beta)
+    #         p1x = -r1y
+    #         p1y = r1x
+    #         dest_dx = dest_x - x  # vector towards destination
+    #         dest_dy = dest_y - y
+    #         # destination vector projected on rad:
+    #         proj = r1x * dest_dx + r1y * dest_dy
+    #         while beta - alpha > 1.5 * math.pi:
+    #             beta -= 2 * math.pi
+    #         while beta - alpha < -1.5 * math.pi:
+    #             beta += 2 * math.pi
+    #         prev_beta = beta
+    #         proj *= SCALE
+    #         if proj > 0.3:
+    #             beta -= min(TRACK_TURN_RATE, abs(0.001 * proj))
+    #         if proj < -0.3:
+    #             beta += min(TRACK_TURN_RATE, abs(0.001 * proj))
+    #         x += p1x * TRACK_DETAIL_STEP
+    #         y += p1y * TRACK_DETAIL_STEP
+    #         track.append((alpha, prev_beta * 0.5 + beta * 0.5, x, y))
+    #         if laps > 4:
+    #             break
+    #         no_freeze -= 1
+    #         if no_freeze == 0:
+    #             break
+
+    #     # Find closed loop range i1..i2, first loop should be ignored, second is OK
+    #     i1, i2 = -1, -1
+    #     i = len(track)
+    #     while True:
+    #         i -= 1
+    #         if i == 0:
+    #             return False  # Failed
+    #         pass_through_start = (
+    #             track[i][0] > self.start_alpha and track[i - 1][0] <= self.start_alpha
+    #         )
+    #         if pass_through_start and i2 == -1:
+    #             i2 = i
+    #         elif pass_through_start and i1 == -1:
+    #             i1 = i
+    #             break
+    #     if self.verbose == 1:
+    #         print("Track generation: %i..%i -> %i-tiles track" % (i1, i2, i2 - i1))
+    #     assert i1 != -1
+    #     assert i2 != -1
+
+    #     track = track[i1 : i2 - 1]
+
+
+    #     # Create tiles
+    #     road_poly_lst = []
+    #     for i in range(len(track)):
+    #         alpha1, beta1, x1, y1 = track[i]
+    #         alpha2, beta2, x2, y2 = track[i - 1]
+    #         road1_l = (
+    #             x1 - TRACK_WIDTH * math.cos(beta1),
+    #             y1 - TRACK_WIDTH * math.sin(beta1),
+    #         )
+    #         road1_r = (
+    #             x1 + TRACK_WIDTH * math.cos(beta1),
+    #             y1 + TRACK_WIDTH * math.sin(beta1),
+    #         )
+    #         road2_l = (
+    #             x2 - TRACK_WIDTH * math.cos(beta2),
+    #             y2 - TRACK_WIDTH * math.sin(beta2),
+    #         )
+    #         road2_r = (
+    #             x2 + TRACK_WIDTH * math.cos(beta2),
+    #             y2 + TRACK_WIDTH * math.sin(beta2),
+    #         )
+    #         road_poly_lst.append((road1_l, road1_r, road2_r, road2_l))
+            
+    #     return checkpoints, track, road_poly_lst
+
+    # def _graph_both_tracks(self):
+
+    #     old_checkpoints, old_track, old_road_poly_lst = self._graph_original_track()
+    #     new_checkpoints, new_track, new_road_poly_lst = self._graph_new_track()
+    #     print(old_checkpoints)
+    #     print(new_checkpoints)
+
+    #     x_old=[i[1]for i in old_checkpoints]
+    #     y_old=[i[2]for i in old_checkpoints]
+    #     xs_old=[i[2] for i in old_track]
+    #     ys_old=[i[3] for i in old_track]
+
+    #     road1_lx_old=[i[0][0]for i in old_road_poly_lst]
+    #     road1_ly_old=[i[0][1]for i in old_road_poly_lst]
+
+    #     road1_rx_old=[i[1][0]for i in old_road_poly_lst]
+    #     road1_ry_old=[i[1][1]for i in old_road_poly_lst]
+
+    #     road2_lx_old=[i[2][0]for i in old_road_poly_lst]
+    #     road2_ly_old=[i[2][1]for i in old_road_poly_lst]
+
+    #     road2_rx_old=[i[3][0]for i in old_road_poly_lst]
+    #     road2_ry_old=[i[3][1]for i in old_road_poly_lst]
+
+    #     x_new=[i[1]for i in new_checkpoints]
+    #     y_new=[i[2]for i in new_checkpoints]
+    #     xs_new=[i[2] for i in new_track]
+    #     ys_new=[i[3] for i in new_track]
+
+    #     road1_lx_new=[i[0][0]for i in new_road_poly_lst]
+    #     road1_ly_new=[i[0][1]for i in new_road_poly_lst]
+
+    #     road1_rx_new=[i[1][0]for i in new_road_poly_lst]
+    #     road1_ry_new=[i[1][1]for i in new_road_poly_lst]
+
+    #     road2_lx_new=[i[2][0]for i in new_road_poly_lst]
+    #     road2_ly_new=[i[2][1]for i in new_road_poly_lst]
+
+    #     road2_rx_new=[i[3][0]for i in new_road_poly_lst]
+    #     road2_ry_new=[i[3][1]for i in new_road_poly_lst]
+
+    #     plt.subplot(1, 2, 1) # row 1, col 2 index 1
+    #     plt.plot(road1_lx_old,road1_ly_old,label='road1_l')
+    #     plt.plot(road1_rx_old,road1_ry_old,label='road1_r')
+
+    #     plt.plot(road2_lx_old,road2_ly_old,label='road2_l')
+    #     plt.plot(road2_rx_old,road2_ry_old,label='road2_r')
+    #     plt.plot(xs_old,ys_old)
+        
+    #     plt.plot(x_old,y_old,"o")
+    #     for a,b in zip(x_old, y_old): 
+    #         plt.text(a, b, str(round(a, 2))+', '+str(round(b, 2)))
+    #     plt.title("Old Track")
+
+    #     plt.subplot(1, 2, 2) # row 1, col 2 index 2
+    #     plt.plot(road1_lx_new,road1_ly_new,label='road1_l')
+    #     plt.plot(road1_rx_new,road1_ry_new,label='road1_r')
+
+    #     plt.plot(road2_lx_new,road2_ly_new,label='road2_l')
+    #     plt.plot(road2_rx_new,road2_ry_new,label='road2_r')
+    #     plt.plot(xs_new,ys_new)
+        
+    #     plt.plot(x_new,y_new,"o")
+    #     for a,b in zip(x_new, y_new): 
+    #         plt.text(a, b, str(round(a, 2))+', '+str(round(b, 2)))
+    #     plt.title("New Track")
+    #     plt.show()
+
     def reset(self):
         self._destroy()
         self.reward = 0.0
@@ -491,6 +789,35 @@ class CarRacing(gym.Env, EzPickle):
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
+
+    # def graph(self):
+    #     x=[i[1]for i in self.checkpoints]
+    #     y=[i[2]for i in self.checkpoints]
+    #     xs=[i[2] for i in self.track]
+    #     ys=[i[3] for i in self.track]
+    #     road1_lx=[i[0][0]for i in road_poly_lst]
+    #     road1_ly=[i[0][1]for i in road_poly_lst]
+
+    #     road1_rx=[i[1][0]for i in road_poly_lst]
+    #     road1_ry=[i[1][1]for i in road_poly_lst]
+
+    #     road2_lx=[i[2][0]for i in road_poly_lst]
+    #     road2_ly=[i[2][1]for i in road_poly_lst]
+
+    #     road2_rx=[i[3][0]for i in road_poly_lst]
+    #     road2_ry=[i[3][1]for i in road_poly_lst]
+    #     plt.plot(road1_lx,road1_ly,label='road1_l')
+    #     plt.plot(road1_rx,road1_ry,label='road1_r')
+
+    #     plt.plot(road2_lx,road2_ly,label='road2_l')
+    #     plt.plot(road2_rx,road2_ry,label='road2_r')
+    #     plt.plot(xs,ys)
+        
+    #     plt.plot(x,y,"o")
+    #     for a,b in zip(x, y): 
+    #         plt.text(a, b, str(round(a, 2))+', '+str(round(b, 2)))
+    #     plt.title("plot 1")
+    #     plt.show()
 
     def render_road(self):
         colors = [0.4, 0.8, 0.4, 1.0] * 4
