@@ -3,7 +3,7 @@ import cv2
 import numpy as np 
 import matplotlib.pyplot as plt
 # from original_carracing import CarRacing
-from carracing_env_test import CarRacing
+from new_carracing import CarRacing
 
 def find_error(observation,previous_error):
 
@@ -79,7 +79,7 @@ def pcgrl_input(checkpoints=None):
         observation, reward, done, info = env.step(action)
         previous_error =error
         rewardsum = rewardsum +reward
-        env.render()
+        # env.render()
         if done :
             env.close()
             break
