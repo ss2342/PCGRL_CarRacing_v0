@@ -2,11 +2,14 @@
 import gym
 from gym import spaces
 from gym.utils import seeding, EzPickle
+from gym.wrappers.monitoring.video_recorder import VideoRecorder
+from Monitor import Monitor
 import numpy as np
 from typing import Optional
 import math
 import matplotlib.pyplot as plt
 from pid_heuristic_test import pcgrl_input
+import time
 
 import pyglet
 from pyglet import gl
@@ -36,170 +39,7 @@ BORDER_MIN_COUNT = 4
 ROAD_COLOR = [0.4, 0.4, 0.4]
 CHECKPOINTS=18
 
-class TrackGenerationEnv(gym.Env, EzPickle):
-
-    def __init__(self):
-        EzPickle.__init__(self)
-        self.seed()
-        #Action contains a control point and a movement:increase/decrease its radian/radius
-        self.action_space = spaces.Tuple((spaces.Discrete(CHECKPOINTS), spaces.Box(low=np.array([-2*math.pi/100,-TRACK_RAD/100]),high=np.array([2*math.pi/100,TRACK_RAD/100]),dtype=np.float32)))
-        #Each control point has two value(radian,radius)
-        self.observation_space = spaces.Box(
-                low=0, high=255, shape=(STATE_H, STATE_W, 3), dtype=np.uint8
-            )
-        self.checkpoints=[]
-        self.viewer = None
-       
-    def seed(self, seed=None):
-        self.np_random, seed = seeding.np_random(seed)
-        return [seed]
-
-    def _checkpoints_generation(self):
-        # CHECKPOINTS = 12
-
-        # Create checkpoints
-        checkpoints = []
-        for c in range(CHECKPOINTS):
-            noise = self.np_random.uniform(0, 2 * math.pi * 1 / CHECKPOINTS)
-            alpha = 2 * math.pi * c / CHECKPOINTS + noise
-            rad = self.np_random.uniform(TRACK_RAD / 3, TRACK_RAD)
-
-            if c == 0:
-                alpha = 0
-                rad = 1 * TRACK_RAD
-            if c == CHECKPOINTS - 1:
-                alpha = 2 * math.pi * c / CHECKPOINTS
-                self.start_alpha = 2 * math.pi * (-0.5) / CHECKPOINTS
-                rad = 1 * TRACK_RAD
-
-            checkpoints.append([alpha, rad])
-        return checkpoints
- 
-
-
-    def step(self, action):
-        reward=0
-        done=False
-
-        # print(action)
-        self.checkpoints[action[0]][0]=self.checkpoints[action[0]][0]+action[1][0]
-        self.checkpoints[action[0]][1]=self.checkpoints[action[0]][1]+action[1][1]
-
-        self.checkpoints.sort(key=lambda x:x[0])
-        
-        state=self.render("rgb_array")
-
-        ##pid reward
-        reward=pcgrl_input(self.checkpoints)
-
-        return state, reward, done, {}
-    
-    def reset(
-        self,
-        *,
-        seed: Optional[int] = None):
-        # super().reset(seed=seed)
-        self.checkpoints=self._checkpoints_generation()
-  
-    def render(self, mode='human', close=False):
-        if self.viewer is None: 
-            from gym.envs.classic_control import rendering
-
-            self.viewer = rendering.Viewer(WINDOW_W, WINDOW_H)
-            self.transform = rendering.Transform()
-        
-        self.transform.set_scale(ZOOM, ZOOM)
-        self.transform.set_translation(
-            WINDOW_W / 2,
-            WINDOW_H / 2,
-        )
-        self.transform.set_rotation(0)
-
-
-        win = self.viewer.window
-        win.switch_to()
-        win.dispatch_events()
-        win.clear()
-
-        self.transform.enable()
-        road_poly=create_track(self.checkpoints)
-
-        if mode == "rgb_array":
-            VP_W = STATE_W
-            VP_H = STATE_H
-        elif mode == "human":
-            VP_W = WINDOW_W
-            VP_H = WINDOW_H
-        
-        gl.glViewport(0, 0, VP_W, VP_H)
-        self.render_road(road_poly)
-        self.transform.disable()
-        if mode == "human":
-            win.flip()
-            return self.viewer.isopen
-
-        image_data = (
-            pyglet.image.get_buffer_manager().get_color_buffer().get_image_data()
-        )
-        arr = np.fromstring(image_data.get_data(), dtype=np.uint8, sep="")
-        arr = arr.reshape(VP_H, VP_W, 4)
-        arr = arr[::-1, :, 0:3]
-
-        return arr
-
-    def render_road(self,road_poly):
-        colors = [0.4, 0.8, 0.4, 1.0] * 4
-        polygons_ = [
-            +PLAYFIELD,
-            +PLAYFIELD,
-            0,
-            +PLAYFIELD,
-            -PLAYFIELD,
-            0,
-            -PLAYFIELD,
-            -PLAYFIELD,
-            0,
-            -PLAYFIELD,
-            +PLAYFIELD,
-            0,
-        ]
-
-        k = PLAYFIELD / 20.0
-        colors.extend([0.4, 0.9, 0.4, 1.0] * 4 * 20 * 20)
-        for x in range(-20, 20, 2):
-            for y in range(-20, 20, 2):
-                polygons_.extend(
-                    [
-                        k * x + k,
-                        k * y + 0,
-                        0,
-                        k * x + 0,
-                        k * y + 0,
-                        0,
-                        k * x + 0,
-                        k * y + k,
-                        0,
-                        k * x + k,
-                        k * y + k,
-                        0,
-                    ]
-                )
-        color=ROAD_COLOR
-        for poly in road_poly:
-            colors.extend([color[0], color[1], color[2], 1] * len(poly))
-            for p in poly:
-                polygons_.extend([p[0], p[1], 0])
-
-        vl = pyglet.graphics.vertex_list(
-            len(polygons_) // 3, ("v3f", polygons_), ("c4f", colors)
-        )  # gl.GL_QUADS,
-        vl.draw(gl.GL_QUADS)
-        vl.delete()
-
-    
-
-
-def create_track(checkpoints):
+def get_track(checkpoints):
     start_alpha = (+checkpoints[-1][0]-2 * math.pi)/2
     alpha=checkpoints[0][0]
     rad=checkpoints[0][1]
@@ -311,6 +151,260 @@ def create_track(checkpoints):
 
         road_poly.append((road1_l, road1_r, road2_r, road2_l))
     return road_poly
+
+class TrackGenerationEnv(gym.Env, EzPickle):
+
+    def __init__(self):
+        EzPickle.__init__(self)
+        self.seed()
+        #Action contains a control point and a movement:increase/decrease its radian/radius
+        self.action_space = spaces.Tuple((spaces.Discrete(CHECKPOINTS), spaces.Box(low=np.array([-2*math.pi/50,-TRACK_RAD/50]),high=np.array([2*math.pi/50,TRACK_RAD/50]),dtype=np.float32)))
+        #Each control point has two value(radian,radius)
+        self.observation_space = spaces.Box(
+                low=0, high=255, shape=(STATE_H, STATE_W, 3), dtype=np.uint8
+            )
+        self.checkpoints=[]
+        self.viewer = None
+        self.screen = None
+        self.clock = None
+       
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
+
+    def _checkpoints_generation(self):
+        # CHECKPOINTS = 12
+
+        # Create checkpoints
+        checkpoints = []
+        for c in range(CHECKPOINTS):
+            noise = self.np_random.uniform(0, 2 * math.pi * 1 / CHECKPOINTS)
+            alpha = 2 * math.pi * c / CHECKPOINTS + noise
+            rad = self.np_random.uniform(TRACK_RAD / 3, TRACK_RAD)
+
+            if c == 0:
+                alpha = 0
+                rad = 1 * TRACK_RAD
+            if c == CHECKPOINTS - 1:
+                alpha = 2 * math.pi * c / CHECKPOINTS
+                self.start_alpha = 2 * math.pi * (-0.5) / CHECKPOINTS
+                rad = 1 * TRACK_RAD
+
+            checkpoints.append([alpha, rad])
+        return checkpoints
+ 
+
+
+    def step(self, action):
+        reward=0
+        done=False
+
+        # print(action)
+        self.checkpoints[action[0]][0]=self.checkpoints[action[0]][0]+action[1][0]
+        self.checkpoints[action[0]][1]=self.checkpoints[action[0]][1]+action[1][1]
+
+        self.checkpoints.sort(key=lambda x:x[0])
+        
+        state=self.render("rgb_array")
+
+        ##pid reward
+        # reward=pcgrl_input(self.checkpoints)
+
+        return state, reward, done, {}
+    
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None):
+        # super().reset(seed=seed)
+        self.checkpoints=self._checkpoints_generation()
+
+    def _draw_colored_polygon(self, surface, poly, color, zoom, translation, angle):
+        import pygame
+        from pygame import gfxdraw
+
+        poly = [pygame.math.Vector2(c).rotate_rad(angle) for c in poly]
+        poly = [
+            (c[0] * zoom + translation[0], c[1] * zoom + translation[1]) for c in poly
+        ]
+        gfxdraw.aapolygon(self.surf, poly, color)
+        gfxdraw.filled_polygon(self.surf, poly, color)
+
+
+    def get_road_poly(self, checkpoints):
+        road_poly = get_track(checkpoints)
+        return road_poly
+
+    def _render_road(self, zoom, translation, angle, checkpoints):
+
+        road_poly = self.get_road_poly(checkpoints)
+        bounds = PLAYFIELD
+        field = [
+            (2 * bounds, 2 * bounds),
+            (2 * bounds, 0),
+            (0, 0),
+            (0, 2 * bounds),
+            ]
+        trans_field = []
+        self._draw_colored_polygon(
+            self.surf, field, (102, 204, 102), zoom, translation, angle
+        )
+
+        k = bounds / (20.0)
+        grass = []
+        for x in range(0, 40, 2):
+            for y in range(0, 40, 2):
+                grass.append(
+                    [
+                        (k * x + k, k * y + 0),
+                        (k * x + 0, k * y + 0),
+                        (k * x + 0, k * y + k),
+                        (k * x + k, k * y + k),
+                    ]
+                )
+        for poly in grass:
+            self._draw_colored_polygon(
+                self.surf, poly, (102, 230, 102), zoom, translation, angle
+            )
+        color=(102,102,102)
+        for poly in road_poly:
+            # converting to pixel coordinates
+            poly = [(p[0] + PLAYFIELD, p[1] + PLAYFIELD) for p in poly]
+            self._draw_colored_polygon(self.surf, poly, color, zoom, translation, angle)
+  
+    def render(self, mode='human', close=False):
+
+        import pygame
+        
+
+        pygame.font.init()
+
+        assert mode in ["human", "state_pixels", "rgb_array"]
+
+        if self.screen is None and mode == "human":
+            pygame.init()
+            pygame.display.init()
+            self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+
+        elif self.screen is None and mode == "rgb_array":
+            pygame.init
+            pygame.display.init()
+            self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+
+
+        
+        if self.clock is None:
+            self.clock = pygame.time.Clock()
+
+
+        # road_poly = get_track(self.checkpoints)
+        self.surf = pygame.Surface((WINDOW_W, WINDOW_H))
+        zoom = 0.7
+        trans = (WINDOW_W / 2, WINDOW_H / 2)
+        self._render_road(zoom, trans, 0, self.checkpoints)
+        self.screen.blit(self.surf, (-WINDOW_W / 4, -WINDOW_H / 4))
+        pygame.display.flip()
+
+        # computing transformations
+        
+        # if self.viewer is None: 
+        #     from gym.envs.classic_control import rendering
+
+        #     self.viewer = rendering.Viewer(WINDOW_W, WINDOW_H)
+        #     self.transform = rendering.Transform()
+        
+        # self.transform.set_scale(ZOOM, ZOOM)
+        # self.transform.set_translation(
+        #     WINDOW_W / 2,
+        #     WINDOW_H / 2,
+        # )
+        # self.transform.set_rotation(0)
+
+
+        # win = self.viewer.window
+        # win.switch_to()
+        # win.dispatch_events()
+        # win.clear()
+
+        # self.transform.enable()
+        # road_poly=create_track(self.checkpoints)
+
+        # if mode == "rgb_array":
+        #     VP_W = STATE_W
+        #     VP_H = STATE_H
+        # elif mode == "human":
+        #     VP_W = WINDOW_W
+        #     VP_H = WINDOW_H
+        
+        # gl.glViewport(0, 0, VP_W, VP_H)
+        # self.render_road(road_poly)
+        # self.transform.disable()
+        # if mode == "human":
+        #     win.flip()
+        #     return self.viewer.isopen
+
+        # image_data = (
+        #     pyglet.image.get_buffer_manager().get_color_buffer().get_image_data()
+        # )
+        # arr = np.fromstring(image_data.get_data(), dtype=np.uint8, sep="")
+        # arr = arr.reshape(VP_H, VP_W, 4)
+        # arr = arr[::-1, :, 0:3]
+
+        # return arr
+
+    # def render_road(self,road_poly):
+    #     colors = [0.4, 0.8, 0.4, 1.0] * 4
+    #     polygons_ = [
+    #         +PLAYFIELD,
+    #         +PLAYFIELD,
+    #         0,
+    #         +PLAYFIELD,
+    #         -PLAYFIELD,
+    #         0,
+    #         -PLAYFIELD,
+    #         -PLAYFIELD,
+    #         0,
+    #         -PLAYFIELD,
+    #         +PLAYFIELD,
+    #         0,
+    #     ]
+
+    #     k = PLAYFIELD / 20.0
+    #     colors.extend([0.4, 0.9, 0.4, 1.0] * 4 * 20 * 20)
+    #     for x in range(-20, 20, 2):
+    #         for y in range(-20, 20, 2):
+    #             polygons_.extend(
+    #                 [
+    #                     k * x + k,
+    #                     k * y + 0,
+    #                     0,
+    #                     k * x + 0,
+    #                     k * y + 0,
+    #                     0,
+    #                     k * x + 0,
+    #                     k * y + k,
+    #                     0,
+    #                     k * x + k,
+    #                     k * y + k,
+    #                     0,
+    #                 ]
+    #             )
+    #     color=ROAD_COLOR
+    #     for poly in road_poly:
+    #         colors.extend([color[0], color[1], color[2], 1] * len(poly))
+    #         for p in poly:
+    #             polygons_.extend([p[0], p[1], 0])
+
+    #     vl = pyglet.graphics.vertex_list(
+    #         len(polygons_) // 3, ("v3f", polygons_), ("c4f", colors)
+    #     )  # gl.GL_QUADS,
+    #     vl.draw(gl.GL_QUADS)
+    #     vl.delete()
+
+    
+
+
+
 
 
 
@@ -458,10 +552,20 @@ def create_track(checkpoints):
 
 def test(iter):
     env = TrackGenerationEnv()
+    # env = Monitor(env, './video', force=True)
+    # video = VideoRecorder(env, './video/training.mp4', True)
     env.reset()
+    # print(env.checkpoints)
     for i in range(iter):
         state, reward, done, info=env.step(env.action_space.sample())
+        # print(env.checkpoints)
         env.render()
+        time.sleep(0.1)
+        # video.capture_frame()
+    # video.close()
+    # video.enabled = False
+    env.close()
+
 
 if __name__ == "__main__":
     test(1000)
