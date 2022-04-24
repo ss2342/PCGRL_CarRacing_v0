@@ -2,8 +2,8 @@
 import gym
 from gym import spaces
 from gym.utils import seeding, EzPickle
-from gym.wrappers.monitoring.video_recorder import VideoRecorder
-from Monitor import Monitor
+# from gym.wrappers.monitoring.video_recorder import VideoRecorder
+# from Monitor import Monitor
 import numpy as np
 from typing import Optional
 import math
