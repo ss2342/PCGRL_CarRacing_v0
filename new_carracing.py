@@ -10,6 +10,7 @@ import gym
 from gym import spaces
 from gym.envs.box2d.car_dynamics import Car
 from gym.utils import EzPickle, seeding
+from sqlalchemy import false
 # from track_generation_env import TrackGenerationEnv
 
 STATE_W = 96  # less than Atari 160x192
@@ -48,7 +49,7 @@ class FrictionDetector(contactListener):
 
     def _contact(self, contact, begin):
         tile = None
-        obj = None
+        obj = None 
         u1 = contact.fixtureA.body.userData
         u2 = contact.fixtureB.body.userData
         if u1 and "road_friction" in u1.__dict__:
@@ -213,17 +214,19 @@ class CarRacing(gym.Env, EzPickle):
 
                 if c == 0:
                     alpha = 0
-                    rad = 1.5 * TRACK_RAD
+                    rad = TRACK_RAD
                 if c == CHECKPOINTS - 1:
                     alpha = 2 * math.pi * c / CHECKPOINTS
-                    self.start_alpha = 2 * math.pi * (-0.5) / CHECKPOINTS
-                    rad = 1.5 * TRACK_RAD
+                    rad = TRACK_RAD
 
-                checkpoints.append((alpha, rad * math.cos(alpha), rad * math.sin(alpha)))
+                checkpoints.append((alpha, rad))
         self.road = []
 
         # Go from one checkpoint to another to create track
-        x, y, beta = 1.5 * TRACK_RAD, 0, 0
+        self.start_alpha = (+checkpoints[-1][0]-2 * math.pi)/2
+        alpha=checkpoints[0][0]
+        rad=checkpoints[0][1]
+        x, y, beta = rad*math.cos(alpha), rad*math.sin(alpha), alpha
         dest_i = 0
         laps = 0
         track = []
@@ -242,7 +245,9 @@ class CarRacing(gym.Env, EzPickle):
                 failed = True
 
                 while True:
-                    dest_alpha, dest_x, dest_y = checkpoints[dest_i % len(checkpoints)]
+                    dest_alpha,dest_rad = checkpoints[dest_i % len(checkpoints)]
+                    dest_x=dest_rad*math.cos(dest_alpha)
+                    dest_y=dest_rad*math.sin(dest_alpha)
                     if alpha <= dest_alpha:
                         failed = False
                         break
@@ -418,6 +423,7 @@ class CarRacing(gym.Env, EzPickle):
                     "instances of this message)"
                 )
         self.car = Car(self.world, *self.track[0][1:4])
+        self.step(None)
 
         if not return_info:
             return self.step(None)[0]
@@ -479,6 +485,7 @@ class CarRacing(gym.Env, EzPickle):
         scroll_x = -(self.car.hull.position[0] + PLAYFIELD) * zoom
         scroll_y = -(self.car.hull.position[1] + PLAYFIELD) * zoom
         trans = pygame.math.Vector2((scroll_x, scroll_y)).rotate_rad(angle)
+
         trans = (WINDOW_W / 2 + trans[0], WINDOW_H / 4 + trans[1])
 
         self._render_road(zoom, trans, angle)
@@ -676,6 +683,11 @@ if __name__ == "__main__":
 
     env = CarRacing()
     env.render()
+    # status=env.reset()
+    # print(np.shape(status))
+    # import matplotlib.pyplot as plt
+    # plt.imshow(status)
+    # plt.show()
 
     isopen = True
     while isopen:
