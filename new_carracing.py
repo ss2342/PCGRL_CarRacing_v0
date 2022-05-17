@@ -1,16 +1,22 @@
-import math
 import sys
-from typing import Optional
+import math
+import numpy as np
 
 import Box2D
-import numpy as np
-from Box2D.b2 import contactListener, fixtureDef, polygonShape
+from Box2D.b2 import fixtureDef
+from Box2D.b2 import polygonShape
+from Box2D.b2 import contactListener
 
 import gym
 from gym import spaces
 from gym.envs.box2d.car_dynamics import Car
-from gym.utils import EzPickle, seeding
-from sqlalchemy import false
+from gym.utils import seeding, EzPickle 
+import matplotlib.pyplot as plt
+
+import pyglet
+
+pyglet.options["debug_gl"] = False
+from pyglet import gl
 # from track_generation_env import TrackGenerationEnv
 
 STATE_W = 96  # less than Atari 160x192
@@ -34,12 +40,15 @@ TRACK_WIDTH = 40 / SCALE
 BORDER = 8 / SCALE
 BORDER_MIN_COUNT = 4
 
+ROAD_COLOR = [0.4, 0.4, 0.4]
+
+CHECKPOINTS = 18
+
 
 class FrictionDetector(contactListener):
-    def __init__(self, env, lap_complete_percent):
+    def __init__(self, env):
         contactListener.__init__(self)
         self.env = env
-        self.lap_complete_percent = lap_complete_percent
 
     def BeginContact(self, contact):
         self._contact(contact, True)
@@ -49,7 +58,7 @@ class FrictionDetector(contactListener):
 
     def _contact(self, contact, begin):
         tile = None
-        obj = None 
+        obj = None
         u1 = contact.fixtureA.body.userData
         u2 = contact.fixtureB.body.userData
         if u1 and "road_friction" in u1.__dict__:
@@ -61,8 +70,9 @@ class FrictionDetector(contactListener):
         if not tile:
             return
 
-        # inherit tile color from env
-        tile.color = self.env.road_color / 255
+        tile.color[0] = ROAD_COLOR[0]
+        tile.color[1] = ROAD_COLOR[1]
+        tile.color[2] = ROAD_COLOR[2]
         if not obj or "tiles" not in obj.__dict__:
             return
         if begin:
@@ -71,16 +81,10 @@ class FrictionDetector(contactListener):
                 tile.road_visited = True
                 self.env.reward += 1000.0 / len(self.env.track)
                 self.env.tile_visited_count += 1
-
-                # Lap is considered completed if enough % of the track was covered
-                if (
-                    tile.idx == 0
-                    and self.env.tile_visited_count / len(self.env.track)
-                    > self.lap_complete_percent
-                ):
-                    self.env_new_lap = True
         else:
             obj.tiles.remove(tile)
+
+
 
 
 class CarRacing(gym.Env, EzPickle):
@@ -129,77 +133,92 @@ class CarRacing(gym.Env, EzPickle):
     ### Credits
     Created by Oleg Klimov
     """
-
     metadata = {
-        "render_modes": ["human", "rgb_array", "state_pixels"],
-        "render_fps": FPS,
+        "render.modes": ["human", "rgb_array", "state_pixels"],
+        "video.frames_per_second": FPS,
     }
 
-    def __init__(
-        self,
-        checkpoints=None,
-        verbose: bool = True,
-        lap_complete_percent: float = 0.95,
-        domain_randomize: bool = False,
-    ):
+    def __init__(self,checkpoints=None,viewer=None,use_ppo_agent=0,verbose=1,):
         EzPickle.__init__(self)
-        self.domain_randomize = domain_randomize
-        self._init_colors()
-        self.checkpoints = None
-        self.contactListener_keepref = FrictionDetector(self, lap_complete_percent)
+        self.checkpoints=checkpoints
+        self.seed()
+        self.contactListener_keepref = FrictionDetector(self)
         self.world = Box2D.b2World((0, 0), contactListener=self.contactListener_keepref)
-        self.screen = None
-        self.clock = None
-        self.isopen = True
+        self.viewer = viewer
         self.invisible_state_window = None
         self.invisible_video_window = None
         self.road = None
         self.car = None
+        self.road_poly = []
         self.reward = 0.0
         self.prev_reward = 0.0
+        self.use_ppo_agent=use_ppo_agent
+        self.frames_per_state=1
+        self.grayscale=0
         self.verbose = verbose
-        self.new_lap = False
+        self.show_info_panel=True
+        self.discretize_actions=None
+        self.possible_hard_actions = ("NOTHING", "LEFT", "RIGHT", "ACCELERATE", "BREAK")
         self.fd_tile = fixtureDef(
             shape=polygonShape(vertices=[(0, 0), (1, 0), (1, -1), (0, -1)])
         )
 
-        # This will throw a warning in tests/envs/test_envs in utils/env_checker.py as the space is not symmetric
-        #   or normalised however this is not possible here so ignore
-        self.action_space = spaces.Box(
-            np.array([-1, 0, 0]).astype(np.float32),
-            np.array([+1, +1, +1]).astype(np.float32),
-        )  # steer, gas, brake
+        state_shape=[STATE_H, STATE_W]
+        if self.use_ppo_agent == 1:
+            self.discretize_actions = "hard"
+            self.show_info_panel=False
+            self.grayscale=1
+            self.frames_per_state=4
+            state_shape.append(self.frames_per_state)
+            lst = list(range(self.frames_per_state))
+            self._update_index = [lst[-1]] + lst[:-1]
+        else:
+            state_shape.append(3)
+            
+        state_shape=tuple(state_shape)
 
-        self.observation_space = spaces.Box(
-            low=0, high=255, shape=(STATE_H, STATE_W, 3), dtype=np.uint8
-        )
+        self.observation_space = spaces.Box(low=0, high=255, shape=state_shape,dtype=np.uint8)
+
+        if self.discretize_actions == "hard":
+            self.action_space = spaces.Discrete(len(self.possible_hard_actions))
+        else:
+            self.action_space = spaces.Box(
+                np.array([-1, 0, 0]).astype(np.float32),
+                np.array([+1, +1, +1]).astype(np.float32),
+            )  # steer, gas, brake
+
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
 
     def _destroy(self):
+        if len(self.road_poly) !=0:
+            return
         if not self.road:
             return
         for t in self.road:
             self.world.DestroyBody(t)
         self.road = []
+        # if self.car is not None:
         self.car.destroy()
 
-    def _init_colors(self):
-        if self.domain_randomize:
-            # domain randomize the bg and grass colour
-            self.road_color = self.np_random.uniform(0, 210, size=3)
+    # def _init_colors(self):
+    #     if self.domain_randomize:
+    #         # domain randomize the bg and grass colour
+    #         self.road_color = self.np_random.uniform(0, 210, size=3)
 
-            self.bg_color = self.np_random.uniform(0, 210, size=3)
+    #         self.bg_color = self.np_random.uniform(0, 210, size=3)
 
-            self.grass_color = np.copy(self.bg_color)
-            idx = self.np_random.integers(3)
-            self.grass_color[idx] += 20
-        else:
-            # default colours
-            self.road_color = np.array([102, 102, 102])
-            self.bg_color = np.array([102, 204, 102])
-            self.grass_color = np.array([102, 230, 102])
+    #         self.grass_color = np.copy(self.bg_color)
+    #         idx = self.np_random.integers(3)
+    #         self.grass_color[idx] += 20
+    #     else:
+    #         # default colours
+    #         self.road_color = np.array([102, 102, 102])
+    #         self.bg_color = np.array([102, 204, 102])
+    #         self.grass_color = np.array([102, 230, 102])
 
     def _create_track(self):
-        CHECKPOINTS = 12
 
         if self.checkpoints != None:
             checkpoints = self.checkpoints
@@ -303,8 +322,8 @@ class CarRacing(gym.Env, EzPickle):
             elif pass_through_start and i1 == -1:
                 i1 = i
                 break
-        if self.verbose:
-            print("Track generation: %i..%i -> %i-tiles track" % (i1, i2, i2 - i1))
+        # if self.verbose:
+            # print("Track generation: %i..%i -> %i-tiles track" % (i1, i2, i2 - i1))
         assert i1 != -1
         assert i2 != -1
 
@@ -321,21 +340,21 @@ class CarRacing(gym.Env, EzPickle):
         if well_glued_together > TRACK_DETAIL_STEP:
             return False
 
-        # Red-white border on hard turns
-        border = [False] * len(track)
-        for i in range(len(track)):
-            good = True
-            oneside = 0
-            for neg in range(BORDER_MIN_COUNT):
-                beta1 = track[i - neg - 0][1]
-                beta2 = track[i - neg - 1][1]
-                good &= abs(beta1 - beta2) > TRACK_TURN_RATE * 0.2
-                oneside += np.sign(beta1 - beta2)
-            good &= abs(oneside) == BORDER_MIN_COUNT
-            border[i] = good
-        for i in range(len(track)):
-            for neg in range(BORDER_MIN_COUNT):
-                border[i - neg] |= border[i]
+        # # Red-white border on hard turns
+        # border = [False] * len(track)
+        # for i in range(len(track)):
+        #     good = True
+        #     oneside = 0
+        #     for neg in range(BORDER_MIN_COUNT):
+        #         beta1 = track[i - neg - 0][1]
+        #         beta2 = track[i - neg - 1][1]
+        #         good &= abs(beta1 - beta2) > TRACK_TURN_RATE * 0.2
+        #         oneside += np.sign(beta1 - beta2)
+        #     good &= abs(oneside) == BORDER_MIN_COUNT
+        #     border[i] = good
+        # for i in range(len(track)):
+        #     for neg in range(BORDER_MIN_COUNT):
+        #         border[i - neg] |= border[i]
 
         # Create tiles
         for i in range(len(track)):
@@ -361,76 +380,127 @@ class CarRacing(gym.Env, EzPickle):
             self.fd_tile.shape.vertices = vertices
             t = self.world.CreateStaticBody(fixtures=self.fd_tile)
             t.userData = t
-            c = 0.01 * (i % 3) * 255
-            t.color = self.road_color + c
+            c = 0.01 * (i % 3)
+            t.color = [ROAD_COLOR[0] + c, ROAD_COLOR[1] + c, ROAD_COLOR[2] + c]
             t.road_visited = False
             t.road_friction = 1.0
             t.idx = i
+            t.reward = 0
             t.fixtures[0].sensor = True
             self.road_poly.append(([road1_l, road1_r, road2_r, road2_l], t.color))
             self.road.append(t)
-            if border[i]:
-                side = np.sign(beta2 - beta1)
-                b1_l = (
-                    x1 + side * TRACK_WIDTH * math.cos(beta1),
-                    y1 + side * TRACK_WIDTH * math.sin(beta1),
-                )
-                b1_r = (
-                    x1 + side * (TRACK_WIDTH + BORDER) * math.cos(beta1),
-                    y1 + side * (TRACK_WIDTH + BORDER) * math.sin(beta1),
-                )
-                b2_l = (
-                    x2 + side * TRACK_WIDTH * math.cos(beta2),
-                    y2 + side * TRACK_WIDTH * math.sin(beta2),
-                )
-                b2_r = (
-                    x2 + side * (TRACK_WIDTH + BORDER) * math.cos(beta2),
-                    y2 + side * (TRACK_WIDTH + BORDER) * math.sin(beta2),
-                )
-                self.road_poly.append(
-                    (
-                        [b1_l, b1_r, b2_r, b2_l],
-                        (255, 255, 255) if i % 2 == 0 else (255, 0, 0),
-                    )
-                )
+            # if border[i]:
+            #     side = np.sign(beta2 - beta1)
+            #     b1_l = (
+            #         x1 + side * TRACK_WIDTH * math.cos(beta1),
+            #         y1 + side * TRACK_WIDTH * math.sin(beta1),
+            #     )
+            #     b1_r = (
+            #         x1 + side * (TRACK_WIDTH + BORDER) * math.cos(beta1),
+            #         y1 + side * (TRACK_WIDTH + BORDER) * math.sin(beta1),
+            #     )
+            #     b2_l = (
+            #         x2 + side * TRACK_WIDTH * math.cos(beta2),
+            #         y2 + side * TRACK_WIDTH * math.sin(beta2),
+            #     )
+            #     b2_r = (
+            #         x2 + side * (TRACK_WIDTH + BORDER) * math.cos(beta2),
+            #         y2 + side * (TRACK_WIDTH + BORDER) * math.sin(beta2),
+            #     )
+            #     self.road_poly.append(
+            #         (
+            #             [b1_l, b1_r, b2_r, b2_l],
+            #             (255, 255, 255) if i % 2 == 0 else (255, 0, 0),
+            #         )
+            #     )
         self.track = track
         return True
 
-    def reset(
-        self,
-        *,
-        seed: Optional[int] = None,
-        return_info: bool = False,
-        options: Optional[dict] = None,
-    ):
-        super().reset(seed=seed)
+    def compute_curvature(self):
+        #first derivatives 
+        dx = np.gradient([t[2] for t in self.track])
+        dy = np.gradient([t[3] for t in self.track])
+
+        #second derivatives 
+        d2x = np.gradient(dx)
+        d2y = np.gradient(dy)
+
+        #calculation of curvature from the typical formula
+        curvature = np.abs(dx * d2y - d2x * dy) / (dx * dx + dy * dy)**1.5
+
+        self.curvature=curvature
+        self.curvature_sum(20,15)
+        return self.cross_entropy()
+        # self.bins,_=np.histogram(curvature,bins=16,range=(0,0.096))
+
+    def curvature_sum(self,range,interval):
+        curvature_bin=[]
+        curv_len=len(self.curvature)
+        start=0
+        while start<curv_len:
+            if start+range-1<curv_len:
+                curvature_bin.append(np.sum(self.curvature[start:start+range-1]))
+            else:
+                curvature_bin.append(np.sum(self.curvature[start:curv_len-1]))
+            start=start+interval
+
+        self.curvature_bin,_=np.histogram(curvature_bin,bins=16,range=(0,0.96))
+
+    def cross_entropy(self):
+        pro=self.curvature_bin/np.sum(self.curvature_bin)
+        pro=-pro*np.log2(pro)
+        pro=np.nan_to_num(pro)
+        CE=np.sum(pro)
+        return CE
+ 
+
+    def reset(self):
         self._destroy()
         self.reward = 0.0
         self.prev_reward = 0.0
         self.tile_visited_count = 0
         self.t = 0.0
-        self.new_lap = False
-        self.road_poly = []
-        self._init_colors()
+        self.state = np.zeros(self.observation_space.shape)
 
-        while True:
-            success = self._create_track()
-            if success:
-                break
-            if self.verbose:
-                print(
-                    "retry to generate track (normal if there are not many"
-                    "instances of this message)"
-                )
+        if len(self.road_poly)==0:
+            while True:
+                success = self._create_track()
+                if success:
+                    break
+                if self.verbose:
+                    print(
+                        "retry to generate track (normal if there are not many"
+                        "instances of this message)"
+                    )
+                return None
         self.car = Car(self.world, *self.track[0][1:4])
-        self.step(None)
+        for _ in range(self.frames_per_state+20): 
+            obs = self.step(None)[0]
 
-        if not return_info:
-            return self.step(None)[0]
+        return obs
+
+    def _update_state(self,new_frame):
+        if self.frames_per_state > 1:
+            self.state[:,:,-1] = new_frame
+            self.state = self.state[:,:,self._update_index]
         else:
-            return self.step(None)[0], {}
+            self.state = new_frame
+
+
+    def _transform_action(self, action):
+        if self.discretize_actions == "hard":
+            # ("NOTHING", "LEFT", "RIGHT", "ACCELERATE", "BREAK")
+            # angle, gas, break
+            if action == 0: action = [ 0, 0, 0.0] # Nothing
+            if action == 1: action = [-1, 0, 0.0] # Left
+            if action == 2: action = [+1, 0, 0.0] # Right
+            if action == 3: action = [ 0,+1, 0.0] # Accelerate
+            if action == 4: action = [ 0, 0, 0.8] # break
+
+        return action
 
     def step(self, action: np.ndarray):
+        action = self._transform_action(action)
         if action is not None:
             self.car.steer(-action[0])
             self.car.gas(action[1])
@@ -440,7 +510,7 @@ class CarRacing(gym.Env, EzPickle):
         self.world.Step(1.0 / FPS, 6 * 30, 2 * 30)
         self.t += 1.0 / FPS
 
-        self.state = self.render("state_pixels")
+        self._update_state(self.render("state_pixels"))
 
         step_reward = 0
         done = False
@@ -451,7 +521,7 @@ class CarRacing(gym.Env, EzPickle):
             self.car.fuel_spent = 0.0
             step_reward = self.reward - self.prev_reward
             self.prev_reward = self.reward
-            if self.tile_visited_count == len(self.track) or self.new_lap:
+            if self.tile_visited_count == len(self.track):
                 done = True
             x, y = self.car.hull.position
             if abs(x) > PLAYFIELD or abs(y) > PLAYFIELD:
@@ -461,247 +531,271 @@ class CarRacing(gym.Env, EzPickle):
         return self.state, step_reward, done, {}
 
     def render(self, mode: str = "human"):
-        import pygame
-
-        pygame.font.init()
-
         assert mode in ["human", "state_pixels", "rgb_array"]
-        if self.screen is None and mode == "human":
-            pygame.init()
-            pygame.display.init()
-            self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
-        if self.clock is None:
-            self.clock = pygame.time.Clock()
+        if self.viewer is None:
+            from gym.envs.classic_control import rendering
+            self.viewer = rendering.Viewer(WINDOW_W, WINDOW_H)
+
+        if "score_label" not in self.__dict__:
+            self.score_label = pyglet.text.Label(
+                "0000",
+                font_size=36,
+                x=20,
+                y=WINDOW_H * 2.5 / 40.00,
+                anchor_x="left",
+                anchor_y="center",
+                color=(255, 255, 255, 255),
+            )
+        
+        if "transform" not in self.__dict__:
+            from gym.envs.classic_control import rendering
+            self.transform = rendering.Transform()
 
         if "t" not in self.__dict__:
             return  # reset() not called yet
 
-        self.surf = pygame.Surface((WINDOW_W, WINDOW_H))
-
-        # computing transformations
-        angle = -self.car.hull.angle
-        # Animating first second zoom.
+        # Animate zoom first second:
         zoom = 0.1 * SCALE * max(1 - self.t, 0) + ZOOM * SCALE * min(self.t, 1)
-        scroll_x = -(self.car.hull.position[0] + PLAYFIELD) * zoom
-        scroll_y = -(self.car.hull.position[1] + PLAYFIELD) * zoom
-        trans = pygame.math.Vector2((scroll_x, scroll_y)).rotate_rad(angle)
+        scroll_x = self.car.hull.position[0]
+        scroll_y = self.car.hull.position[1]
+        angle = -self.car.hull.angle
+        vel = self.car.hull.linearVelocity
+        if np.linalg.norm(vel) > 0.5:
+            angle = math.atan2(vel[0], vel[1])
+        self.transform.set_scale(zoom, zoom)
+        self.transform.set_translation(
+            WINDOW_W / 2
+            - (scroll_x * zoom * math.cos(angle) - scroll_y * zoom * math.sin(angle)),
+            WINDOW_H / 4
+            - (scroll_x * zoom * math.sin(angle) + scroll_y * zoom * math.cos(angle)),
+        )
+        self.transform.set_rotation(angle)
 
-        trans = (WINDOW_W / 2 + trans[0], WINDOW_H / 4 + trans[1])
+        self.car.draw(self.viewer, mode != "state_pixels")
 
-        self._render_road(zoom, trans, angle)
-        self.car.draw(self.surf, zoom, trans, angle, mode != "state_pixels")
+        arr = None
+        win = self.viewer.window
+        win.switch_to()
+        win.dispatch_events()
 
-        self.surf = pygame.transform.flip(self.surf, False, True)
+        win.clear()
+        t = self.transform
+        if mode == "rgb_array":
+            VP_W = VIDEO_W
+            VP_H = VIDEO_H
+        elif mode == "state_pixels":
+            VP_W = STATE_W
+            VP_H = STATE_H
+        else:
+            pixel_scale = 1
+            if hasattr(win.context, "_nscontext"):
+                pixel_scale = (
+                    win.context._nscontext.view().backingScaleFactor()
+                )  # pylint: disable=protected-access
+            VP_W = int(pixel_scale * WINDOW_W)
+            VP_H = int(pixel_scale * WINDOW_H)
 
-        # showing stats
-        self._render_indicators(WINDOW_W, WINDOW_H)
-
-        font = pygame.font.Font(pygame.font.get_default_font(), 42)
-        text = font.render("%04i" % self.reward, True, (255, 255, 255), (0, 0, 0))
-        text_rect = text.get_rect()
-        text_rect.center = (60, WINDOW_H - WINDOW_H * 2.5 / 40.0)
-        self.surf.blit(text, text_rect)
+        gl.glViewport(0, 0, VP_W, VP_H)
+        t.enable()
+        self.render_road()
+        for geom in self.viewer.onetime_geoms:
+            geom.render()
+        self.viewer.onetime_geoms = []
+        t.disable()
+        if self.show_info_panel:
+            self.render_indicators(WINDOW_W, WINDOW_H)
 
         if mode == "human":
-            pygame.event.pump()
-            self.clock.tick(self.metadata["render_fps"])
-            self.screen.fill(0)
-            self.screen.blit(self.surf, (0, 0))
-            pygame.display.flip()
+            win.flip()
+            return self.viewer.isopen
 
-        if mode == "rgb_array":
-            return self._create_image_array(self.surf, (VIDEO_W, VIDEO_H))
-        elif mode == "state_pixels":
-            return self._create_image_array(self.surf, (STATE_W, STATE_H))
-        else:
-            return self.isopen
+        image_data = (
+            pyglet.image.get_buffer_manager().get_color_buffer().get_image_data()
+        )
+        arr = np.fromstring(image_data.get_data(), dtype=np.uint8, sep="")
+        arr = arr.reshape(VP_H, VP_W, 4)
+        arr = arr[::-1, :, 0:3]
 
-    def _render_road(self, zoom, translation, angle):
-        bounds = PLAYFIELD
-        field = [
-            (2 * bounds, 2 * bounds),
-            (2 * bounds, 0),
-            (0, 0),
-            (0, 2 * bounds),
+        if self.grayscale and mode !="rgb_array":
+            arr_bw = np.dot(arr[...,:3], [0.299, 0.587, 0.114])
+            arr = arr_bw
+        return arr
+
+
+    def render_road(self):
+        colors = [0.4, 0.8, 0.4, 1.0] * 4
+        polygons_ = [
+            +PLAYFIELD,
+            +PLAYFIELD,
+            0,
+            +PLAYFIELD,
+            -PLAYFIELD,
+            0,
+            -PLAYFIELD,
+            -PLAYFIELD,
+            0,
+            -PLAYFIELD,
+            +PLAYFIELD,
+            0,
         ]
 
-        # draw background
-        self._draw_colored_polygon(
-            self.surf, field, self.bg_color, zoom, translation, angle
-        )
-
-        # draw grass patches
-        k = bounds / (20.0)
-        grass = []
-        for x in range(0, 40, 2):
-            for y in range(0, 40, 2):
-                grass.append(
+        k = PLAYFIELD / 20.0
+        colors.extend([0.4, 0.9, 0.4, 1.0] * 4 * 20 * 20)
+        for x in range(-20, 20, 2):
+            for y in range(-20, 20, 2):
+                polygons_.extend(
                     [
-                        (k * x + k, k * y + 0),
-                        (k * x + 0, k * y + 0),
-                        (k * x + 0, k * y + k),
-                        (k * x + k, k * y + k),
+                        k * x + k,
+                        k * y + 0,
+                        0,
+                        k * x + 0,
+                        k * y + 0,
+                        0,
+                        k * x + 0,
+                        k * y + k,
+                        0,
+                        k * x + k,
+                        k * y + k,
+                        0,
                     ]
                 )
-        for poly in grass:
-            self._draw_colored_polygon(
-                self.surf, poly, self.grass_color, zoom, translation, angle
-            )
 
-        # draw road
         for poly, color in self.road_poly:
-            # converting to pixel coordinates
-            poly = [(p[0] + PLAYFIELD, p[1] + PLAYFIELD) for p in poly]
-            color = [int(c) for c in color]
-            self._draw_colored_polygon(self.surf, poly, color, zoom, translation, angle)
+            colors.extend([color[0], color[1], color[2], 1] * len(poly))
+            for p in poly:
+                polygons_.extend([p[0], p[1], 0])
 
-    def _render_indicators(self, W, H):
-        import pygame
+        vl = pyglet.graphics.vertex_list(
+            len(polygons_) // 3, ("v3f", polygons_), ("c4f", colors)
+        )  # gl.GL_QUADS,
+        vl.draw(gl.GL_QUADS)
+        vl.delete()
 
+    def render_indicators(self, W, H):
         s = W / 40.0
         h = H / 40.0
-        color = (0, 0, 0)
-        polygon = [(W, H), (W, H - 5 * h), (0, H - 5 * h), (0, H)]
-        pygame.draw.polygon(self.surf, color=color, points=polygon)
+        colors = [0, 0, 0, 1] * 4
+        polygons = [W, 0, 0, W, 5 * h, 0, 0, 5 * h, 0, 0, 0, 0]
 
-        def vertical_ind(place, val):
-            return [
-                (place * s, H - (h + h * val)),
-                ((place + 1) * s, H - (h + h * val)),
-                ((place + 1) * s, H - h),
-                ((place + 0) * s, H - h),
-            ]
+        def vertical_ind(place, val, color):
+            colors.extend([color[0], color[1], color[2], 1] * 4)
+            polygons.extend(
+                [
+                    place * s,
+                    h + h * val,
+                    0,
+                    (place + 1) * s,
+                    h + h * val,
+                    0,
+                    (place + 1) * s,
+                    h,
+                    0,
+                    (place + 0) * s,
+                    h,
+                    0,
+                ]
+            )
 
-        def horiz_ind(place, val):
-            return [
-                ((place + 0) * s, H - 4 * h),
-                ((place + val) * s, H - 4 * h),
-                ((place + val) * s, H - 2 * h),
-                ((place + 0) * s, H - 2 * h),
-            ]
+        def horiz_ind(place, val, color):
+            colors.extend([color[0], color[1], color[2], 1] * 4)
+            polygons.extend(
+                [
+                    (place + 0) * s,
+                    4 * h,
+                    0,
+                    (place + val) * s,
+                    4 * h,
+                    0,
+                    (place + val) * s,
+                    2 * h,
+                    0,
+                    (place + 0) * s,
+                    2 * h,
+                    0,
+                ]
+            )
 
         true_speed = np.sqrt(
             np.square(self.car.hull.linearVelocity[0])
             + np.square(self.car.hull.linearVelocity[1])
         )
 
-        # simple wrapper to render if the indicator value is above a threshold
-        def render_if_min(value, points, color):
-            if abs(value) > 1e-4:
-                pygame.draw.polygon(self.surf, points=points, color=color)
-
-        render_if_min(true_speed, vertical_ind(5, 0.02 * true_speed), (255, 255, 255))
-        # ABS sensors
-        render_if_min(
-            self.car.wheels[0].omega,
-            vertical_ind(7, 0.01 * self.car.wheels[0].omega),
-            (0, 0, 255),
-        )
-        render_if_min(
-            self.car.wheels[1].omega,
-            vertical_ind(8, 0.01 * self.car.wheels[1].omega),
-            (0, 0, 255),
-        )
-        render_if_min(
-            self.car.wheels[2].omega,
-            vertical_ind(9, 0.01 * self.car.wheels[2].omega),
-            (51, 0, 255),
-        )
-        render_if_min(
-            self.car.wheels[3].omega,
-            vertical_ind(10, 0.01 * self.car.wheels[3].omega),
-            (51, 0, 255),
-        )
-
-        render_if_min(
-            self.car.wheels[0].joint.angle,
-            horiz_ind(20, -10.0 * self.car.wheels[0].joint.angle),
-            (0, 255, 0),
-        )
-        render_if_min(
-            self.car.hull.angularVelocity,
-            horiz_ind(30, -0.8 * self.car.hull.angularVelocity),
-            (255, 0, 0),
-        )
-
-    def _draw_colored_polygon(self, surface, poly, color, zoom, translation, angle):
-        import pygame
-        from pygame import gfxdraw
-
-        poly = [pygame.math.Vector2(c).rotate_rad(angle) for c in poly]
-        poly = [
-            (c[0] * zoom + translation[0], c[1] * zoom + translation[1]) for c in poly
-        ]
-        gfxdraw.aapolygon(self.surf, poly, color)
-        gfxdraw.filled_polygon(self.surf, poly, color)
-
-    def _create_image_array(self, screen, size):
-        import pygame
-
-        scaled_screen = pygame.transform.smoothscale(screen, size)
-        return np.transpose(
-            np.array(pygame.surfarray.pixels3d(scaled_screen)), axes=(1, 0, 2)
-        )
+        vertical_ind(5, 0.02 * true_speed, (1, 1, 1))
+        vertical_ind(7, 0.01 * self.car.wheels[0].omega, (0.0, 0, 1))  # ABS sensors
+        vertical_ind(8, 0.01 * self.car.wheels[1].omega, (0.0, 0, 1))
+        vertical_ind(9, 0.01 * self.car.wheels[2].omega, (0.2, 0, 1))
+        vertical_ind(10, 0.01 * self.car.wheels[3].omega, (0.2, 0, 1))
+        horiz_ind(20, -10.0 * self.car.wheels[0].joint.angle, (0, 1, 0))
+        horiz_ind(30, -0.8 * self.car.hull.angularVelocity, (1, 0, 0))
+        vl = pyglet.graphics.vertex_list(
+            len(polygons) // 3, ("v3f", polygons), ("c4f", colors)
+        )  # gl.GL_QUADS,
+        vl.draw(gl.GL_QUADS)
+        vl.delete()
+        self.score_label.text = "%04i" % self.reward
+        self.score_label.draw()
 
     def close(self):
-        if self.screen is not None:
-            import pygame
+        if self.viewer is not None:
+            # self.viewer.close()
+            self.viewer = None
 
-            pygame.display.quit()
-            self.isopen = False
-            pygame.quit()
+    def getRoadPoly(self):
+        return self.road_poly
 
 
 if __name__ == "__main__":
+    from pyglet.window import key
+
     a = np.array([0.0, 0.0, 0.0])
-    import pygame
 
-    def register_input():
-        for event in pygame.event.get():
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_LEFT:
-                    a[0] = -1.0
-                if event.key == pygame.K_RIGHT:
-                    a[0] = +1.0
-                if event.key == pygame.K_UP:
-                    a[1] = +1.0
-                if event.key == pygame.K_DOWN:
-                    a[2] = +0.8  # set 1.0 for wheels to block to zero rotation
-                if event.key == pygame.K_RETURN:
-                    global restart
-                    restart = True
+    def key_press(k, mod):
+        global restart
+        if k == 0xFF0D:
+            restart = True
+        if k == key.LEFT:
+            a[0] = -1.0
+        if k == key.RIGHT:
+            a[0] = +1.0
+        if k == key.UP:
+            a[1] = +1.0
+        if k == key.DOWN:
+            a[2] = +0.8  # set 1.0 for wheels to block to zero rotation
 
-            if event.type == pygame.KEYUP:
-                if event.key == pygame.K_LEFT:
-                    a[0] = 0
-                if event.key == pygame.K_RIGHT:
-                    a[0] = 0
-                if event.key == pygame.K_UP:
-                    a[1] = 0
-                if event.key == pygame.K_DOWN:
-                    a[2] = 0
+    def key_release(k, mod):
+        if k == key.LEFT and a[0] == -1.0:
+            a[0] = 0
+        if k == key.RIGHT and a[0] == +1.0:
+            a[0] = 0
+        if k == key.UP:
+            a[1] = 0
+        if k == key.DOWN:
+            a[2] = 0
 
-    env = CarRacing()
+    env = CarRacing(use_ppo_agent=0)
     env.render()
-    # status=env.reset()
-    # print(np.shape(status))
-    # import matplotlib.pyplot as plt
-    # plt.imshow(status)
-    # plt.show()
+    env.viewer.window.on_key_press = key_press
+    env.viewer.window.on_key_release = key_release
+    record_video = False
+    if record_video:
+        from gym.wrappers.monitor import Monitor 
 
+        env = Monitor(env, "/tmp/video-test", force=True)
     isopen = True
     while isopen:
         env.reset()
+        env.compute_curvature()
+        # plt.hist(env.curvature_bin,bins=16,range=(0,0.96))
+        # plt.show()
         total_reward = 0.0
         steps = 0
         restart = False
         while True:
-            register_input()
             s, r, done, info = env.step(a)
             total_reward += r
             if steps % 200 == 0 or done:
-                print("\naction " + str([f"{x:+0.2f}" for x in a]))
-                print(f"step {steps} total_reward {total_reward:+0.2f}")
+                print("\naction " + str(["{:+0.2f}".format(x) for x in a]))
+                print("step {} total_reward {:+0.2f}".format(steps, total_reward))
             steps += 1
             isopen = env.render()
             if done or restart or isopen == False:
